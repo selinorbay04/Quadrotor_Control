@@ -9,8 +9,23 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 
+#include <array>
+
 // gcc -o week1 week_1_student.cpp -lwiringPi  -lm
-#define COMP_FILTER_ALPHA 0.02
+#define ALPHA 0.02
+#define MAX_GYRO_RATE 300
+#define MAX_ANGLE 45
+#define TIMEOUT_THRESHOLD 0.35
+
+
+#define THURST_MIN 0 
+#define THRUST_MAX 2000
+#define THRUST_NEUTRAL 100
+#define THURST_AMPLITUDE 100
+
+#define PITCH_AMPLITUDE 10
+#define PITCH_P_GAIN 10
+
 
 int setup_imu();
 void calibrate_imu();
@@ -35,15 +50,21 @@ float pitch_angle = 0;
 float roll_angle = 0;
 float accels_and_gyros[6]; // accel xyz,  gyro xyz,
 
-float roll_accel = 0; // Roll angle from accelerometer only (noisy)
-float pitch_accel = 0; // Pitch angle from accelerometer only (noisy)
-float roll_gyro = 0; // Roll angle from integrated gyroscope (drifting)
-float pitch_gyro = 0; // Pitch angle from integrated gyroscope (drifting)
+long last_joystick_time = 0;
+long new_joystick_time = 0;
+long last_joystick_sequence = 0;
+
 float roll_filtered = 0; 
 float pitch_filtered = 0;       
-float dt = 0; // time since last read
-int sample_count = 0;          
+int sample = 0;    
+
+float integrated_roll = 0;
+float integrated_pitch = 0;
  
+
+std::array <int, 4> motor_commands;
+
+std::array<int, 4> pitch_signs = {1, -1, 1, -1};
 
 struct Joystick {
     int key0;
@@ -63,6 +84,8 @@ int run_program=1;
 
 
 
+
+
 void trap(int signal){
     
     printf("ending program\n\r");
@@ -73,6 +96,7 @@ void trap(int signal){
 
 void calibrate_imu()
 {
+    //printf("calibrating imu...\n");
     x_gyro_calibration = 0;
     y_gyro_calibration = 0;
     z_gyro_calibration = 0;
@@ -89,7 +113,8 @@ void calibrate_imu()
         z_gyro_calibration += imu_data[5];
 
         roll_calibration += atan2(imu_data[2], imu_data[0]) * 180.0 / M_PI;
-        pitch_calibration += atan2(imu_data[1], sqrt(imu_data[0]*imu_data[0] + imu_data[2]*imu_data[2])) * 180.0 / M_PI;
+        pitch_calibration += atan2(imu_data[1], sqrt(imu_data[0] * imu_data[0] + imu_data[2] * imu_data[2])) * 180.0 / M_PI;
+
     }
 
     x_gyro_calibration /= 1000.0;
@@ -99,10 +124,7 @@ void calibrate_imu()
     pitch_calibration /= 1000.0;
 
 
-    printf("calibration complete, %f %f %f %f %f %f\n\r", x_gyro_calibration, y_gyro_calibration, z_gyro_calibration, roll_calibration, pitch_calibration);
-
-    roll_gyro = 0;
-    pitch_gyro = 0;
+    //printf("calibration complete: %f %f %f %f %f %f\n", x_gyro_calibration, y_gyro_calibration, z_gyro_calibration, roll_calibration, pitch_calibration);
 
 }
 
@@ -189,17 +211,20 @@ void read_imu()
     imu_data[5] = -((float)vw) / 32768.0 * 1000.0; // convert to degrees/sec
 
 
-    ////////////////////COMPUTATION OF ROLL/PITCH AND CALIBRATION
-
-    //calculate raw roll and pitch
+    // calculate raw roll and pitch
     roll_angle = atan2(imu_data[2], imu_data[0]) * 180.0 / M_PI;
-    pitch_angle = atan2(imu_data[1], sqrt(imu_data[0]*imu_data[0] + imu_data[2]*imu_data[2])) * 180.0 / M_PI;
+    pitch_angle = atan2(imu_data[1], sqrt(imu_data[0] * imu_data[0] + imu_data[2] * imu_data[2])) * 180.0 / M_PI;
 
-    //calibration
+    // calibration
     roll_angle -= roll_calibration;
     pitch_angle -= pitch_calibration;
 
-    //calibrate raw gyro values
+    // accels without calibration
+    accels_and_gyros[0] = imu_data[0];
+    accels_and_gyros[1] = imu_data[1];
+    accels_and_gyros[2] = imu_data[2];
+
+    // calibrate gyro values
     accels_and_gyros[3] = imu_data[3] - x_gyro_calibration;
     accels_and_gyros[4] = imu_data[4] - y_gyro_calibration;
     accels_and_gyros[5] = imu_data[5] - z_gyro_calibration;
@@ -208,7 +233,24 @@ void read_imu()
 
 void print_imu_data()
 {
-    printf("Gx:%10.5f | Gy:%10.5f | Gz:%10.5f | Roll:%10.5f | Pitch:%10.5f\n\r", accels_and_gyros[3], accels_and_gyros[4], accels_and_gyros[5], roll_angle, pitch_angle);
+    printf("%d, %10.5f, %10.5f, %10.5f, %10.5f, %10.5f, %10.5f\n", 
+        sample, roll_filtered, roll_angle, integrated_roll, 
+        pitch_filtered, pitch_angle, integrated_pitch);
+
+}
+
+void print_roll_data()
+{
+    printf("%d, %10.5f, %10.5f, %10.5f\n", 
+        sample, roll_filtered, roll_angle, integrated_roll);
+
+}
+
+void print_pitch_data()
+{
+    printf("%d, %10.5f, %10.5f, %10.5f\n", 
+        sample, pitch_angle, pitch_filtered, integrated_pitch);
+
 }
 
 int setup_imu()
@@ -232,7 +274,7 @@ int setup_imu()
     }
     else
     {
-        printf("all i2c devices detected\n");
+        //printf("all i2c devices detected\n");
         sleep(1);
         wiringPiI2CWriteReg8(accel_address, 0x7d, 0x04); // power on accel
         wiringPiI2CWriteReg8(accel_address, 0x41, 0x00); // accel range to +_3g
@@ -262,12 +304,28 @@ void update_filter(){
 
     //convert to seconds
     imu_diff=imu_diff/1000000000;
+
     time_prev=time_curr;
     //comp. filter for roll, pitch here:
+
+    float gyro_roll_dt = accels_and_gyros[4] * imu_diff;
+    float gyro_pitch_dt = accels_and_gyros[5] * imu_diff;
+
+    //roll_gyro = roll_filtered + accels_and_gyros[3] * dt; 
+    //pitch_gyro = pitch_filtered + accels_and_gyros[4] * dt;
+
+    //printf("roll gyro: %f, pitch gyro: %f\n", roll_gyro, pitch_gyro);
+
+    //COMPLEMENTARY 
+    roll_filtered = ALPHA * roll_angle + (1 - ALPHA) * (gyro_roll_dt + roll_filtered);
+    pitch_filtered = ALPHA * pitch_angle + (1 - ALPHA) * (gyro_pitch_dt + pitch_filtered);
+
+    integrated_roll += accels_and_gyros[4] * imu_diff;
+    integrated_pitch += accels_and_gyros[5] * imu_diff;
+    
 }
 
 
-    
     //function to add
 void setup_joystick(){
 
@@ -295,24 +353,105 @@ void setup_joystick(){
 }
     //when cntrl+c pressed, kill motors
 
+void safety_check(Joystick data){
+
+    timespec_get(&te,TIME_UTC);
+    time_curr=te.tv_nsec;
+
+    float _diff = time_curr - last_joystick_time;
+    if(_diff <= 0){
+        _diff += 1000000000;
+    }
+     
+
+    if(last_joystick_sequence != data.sequence_num){
+        
+        last_joystick_time = time_curr;
+        last_joystick_sequence = data.sequence_num;        
+    }
+    else if(_diff / 1000000000 > TIMEOUT_THRESHOLD ){
+        printf("_diff = %f seconds\n", _diff / 1000000000.0f);
+        printf("Joystick timeout, killing program\n");
+        run_program = 0;   
+    }
+    
+    
+    //gyro rates
+    if(fabs(accels_and_gyros[3]) > MAX_GYRO_RATE || 
+        fabs(accels_and_gyros[4]) > MAX_GYRO_RATE || 
+        fabs(accels_and_gyros[5]) > MAX_GYRO_RATE){
+
+        printf("Gyro rate exceeded, killing program\n");
+        run_program = 0;
+    }
+
+    if(fabs(roll_filtered) > MAX_ANGLE ){
+        printf("Roll angle exceeded, killing program\n");
+        run_program = 0;
+    }
+
+    if(fabs(pitch_filtered) > MAX_ANGLE ){
+        printf("Pitch angle exceeded, killing program\n");
+        run_program = 0;
+    }
+
+    if(data.key1 == 1){
+        printf("Button B pressed, killing program\n");
+        run_program = 0;
+    }
+}
+
+
+
+void set_motors(Joystick data){
+    int init_thrust = (THRUST_NEUTRAL + THURST_AMPLITUDE) * -(data.thrust - 128) / 127;
+    motor_commands.fill(init_thrust);
+
+    int pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
+    int pitch_error =  pitch_desired - pitch_filtered;
+
+    int pitch_correction = PITCH_P_GAIN * pitch_error;
+    //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
+
+
+    for (int i = 0; i < motor_commands.size(); i++){
+        motor_commands[i] += pitch_correction * pitch_signs[i];
+    }
+}
+
+void print_motors(){
+    printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[2], pitch_filtered, accels_and_gyros[4]);
+}
 
 int main(int argc, char *argv[])
 {
-
     setup_imu();
-    //sample 1000 times and average them to calibrate
     calibrate_imu();
-
-    //in main before while(1) loop add...
     setup_joystick();
+    last_joystick_sequence = shared_memory->sequence_num;
     signal(SIGINT, &trap);
-    //to refresh values from shared memory first
-    Joystick joystick_data=*shared_memory;
-    //be sure to update the while(1) in main to use run_program instead
 
-    while (1)
+    timespec_get(&te, TIME_UTC);
+    last_joystick_time = te.tv_nsec;
+
+    Joystick joystick_data=*shared_memory;
+    
+    //be sure to update the while(1) in main to use run_program instead
+    //printf("Sample, Pitch_angle, Pitch_filtered, Integrated_pitch, \n");
+    while (run_program == 1)
     {
         read_imu();
-        print_imu_data();
+        joystick_data = *shared_memory;
+        safety_check(joystick_data);
+        
+        //printf("1\n");
+        update_filter();
+        //printf("2\n");
+        //print_pitch_data();
+        //printf("3\n");
+        
+        set_motors(joystick_data);
+        print_motors();
+        sample++;
     }
 }
