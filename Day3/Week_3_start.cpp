@@ -15,7 +15,7 @@
 #define MAX_GYRO_RATE 300.0
 #define MAX_ROLL_ANGLE 45.0
 #define MAX_PITCH_ANGLE 45.0
-#define JOYSTICK_TIMEOUT_S 0.35
+#define JOYSTICK_TIMEOUT_S 1.0
 
 #define THURST_MIN 0 
 #define THRUST_MAX 2000
@@ -24,6 +24,10 @@
 
 #define PITCH_AMPLITUDE 10
 #define PITCH_P_GAIN 10
+
+#define PITCH_D_GAIN 5
+#define PITCH_I_GAIN 0.1
+#define I_SATURATE 100
 
 // Structs
 struct Joystick
@@ -72,6 +76,23 @@ int last_sequence = 0;
 int joy_initialized = 0;
 int run_program = 1;
 
+int init_thrust = 0;
+int pitch_desired = 0;
+int pitch_error = 0;
+
+float integ_pitch_err = 0;
+
+double joy_dt = 0.0;
+
+int time_curr_I;
+int time_prev_I;
+
+
+
+// int pitch_prev_error = 0;
+// int time_curr_D;
+// int time_prev_D;
+
 struct timespec te;
 
 Joystick *shared_memory;
@@ -98,7 +119,10 @@ void setup_joystick();
 void safety_check(Joystick data);
 void trap(int signal);
 
-void set_motors(Joystick data);
+void set_motors_P(Joystick data);
+void set_motors_D(Joystick data);
+void set_motors_I(Joystick data);
+void set_motors_PID(Joystick data);
 
 int main(int argc, char *argv[])
 {
@@ -120,7 +144,7 @@ int main(int argc, char *argv[])
         update_filter();
         joystick_data = *shared_memory;
         safety_check(joystick_data);
-        set_motors(joystick_data);
+        set_motors_PID(joystick_data);
         print_motors();
     }
     return 0;
@@ -373,7 +397,7 @@ void safety_check(Joystick data)
         joy_time_curr =+ 1.0;
     }
 
-    double joy_dt = joy_time_curr - joy_time_prev;
+        joy_dt = joy_time_curr - joy_time_prev;
 
     if (joy_dt > JOYSTICK_TIMEOUT_S)
     {
@@ -428,13 +452,13 @@ void print_pitch_data()
     printf("%10.5f, %10.5f, %10.5f\n\r", f_pitch_angle, pitch_angle, i_pitch);
 }
 
-void set_motors(Joystick data){
+void set_motors_P(Joystick data){
     //
-    int init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
     motor_commands.fill(init_thrust);
 
-    int pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
-    int pitch_error =  pitch_desired - f_pitch_angle;
+    pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
+    pitch_error =  pitch_desired - f_pitch_angle;
 
     int pitch_correction = PITCH_P_GAIN * pitch_error;
     //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
@@ -445,8 +469,110 @@ void set_motors(Joystick data){
     }
 }
 
+void set_motors_D(Joystick data){
+
+    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+    motor_commands.fill(init_thrust);
+
+    int pitch_correction = PITCH_D_GAIN * accels_and_gyros[4];
+
+
+    for (int i = 0; i < motor_commands.size(); i++){
+        motor_commands[i] += pitch_correction * pitch_signs[i];
+    }
+}
+
+void set_motors_I(Joystick data){
+
+    timespec_get(&te, TIME_UTC);
+    time_curr_I = te.tv_nsec;
+    // compute time since last execution
+    float imu_diff = time_curr_I - time_prev_I;
+    // check for rollover
+    if (imu_diff <= 0)
+    {
+        imu_diff += 1000000000;
+    }
+    // convert to seconds
+    imu_diff = imu_diff / 1000000000;
+    
+
+
+    //
+    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+    motor_commands.fill(init_thrust);
+
+    pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
+    pitch_error =  pitch_desired - f_pitch_angle;
+
+    integ_pitch_err += imu_diff *float(pitch_error) * (float)PITCH_I_GAIN;
+
+    if(integ_pitch_err > I_SATURATE){
+        integ_pitch_err = I_SATURATE;
+    }
+    else if(integ_pitch_err < -I_SATURATE){
+        integ_pitch_err = -I_SATURATE;
+    }
+
+    int pitch_correction =  integ_pitch_err;
+    //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
+
+
+    for (int i = 0; i < motor_commands.size(); i++){
+        motor_commands[i] += pitch_correction * pitch_signs[i];
+    }
+
+    time_prev_I = time_curr_I;
+}
+
+void set_motors_PID(Joystick data){
+
+    timespec_get(&te, TIME_UTC);
+    time_curr_I = te.tv_nsec;
+    // compute time since last execution
+    float imu_diff = time_curr_I - time_prev_I;
+    // check for rollover
+    if (imu_diff <= 0)
+    {
+        imu_diff += 1000000000;
+    }
+    // convert to seconds
+    imu_diff = imu_diff / 1000000000;
+    
+
+
+    //
+    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+    motor_commands.fill(init_thrust);
+
+    pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
+    pitch_error =  pitch_desired - f_pitch_angle;
+
+    integ_pitch_err += imu_diff *float(pitch_error)*(float)PITCH_I_GAIN;
+
+    if(integ_pitch_err > I_SATURATE){
+        integ_pitch_err = I_SATURATE;
+    }
+    else if(integ_pitch_err < -I_SATURATE){
+        integ_pitch_err = -I_SATURATE;
+    }
+
+    int pitch_correction = integ_pitch_err + PITCH_P_GAIN * pitch_error + PITCH_D_GAIN * accels_and_gyros[4];
+    //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
+
+
+    for (int i = 0; i < motor_commands.size(); i++){
+        motor_commands[i] += pitch_correction * pitch_signs[i];
+    }
+
+    time_prev_I = time_curr_I;
+}
+
+
+
 void print_motors(){
-    printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], f_pitch_angle, accels_and_gyros[4]);
+    //printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], f_pitch_angle, accels_and_gyros[4]);
+    printf("%d, %d, %d, %d, %10.5f \n\r" , motor_commands[0], motor_commands[1], init_thrust, pitch_desired*10, f_pitch_angle*10);
 }
 
 
