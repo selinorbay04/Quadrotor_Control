@@ -12,20 +12,20 @@
 #include <array>
 
 //Defines
-#define MAX_GYRO_RATE 300.0
+#define MAX_GYRO_RATE 600.0
 #define MAX_ROLL_ANGLE 45.0
 #define MAX_PITCH_ANGLE 45.0
 #define JOYSTICK_TIMEOUT_S 1.0
 
 #define THURST_MIN 0 
 #define THRUST_MAX 2000
-#define THRUST_NEUTRAL 100
+#define THRUST_NEUTRAL 500
 #define THURST_AMPLITUDE 100
 
 #define PITCH_AMPLITUDE 10
 #define PITCH_P_GAIN 0
 
-#define PITCH_D_GAIN 0
+#define PITCH_D_GAIN 5
 #define PITCH_I_GAIN 0
 #define I_SATURATE 0
 
@@ -88,7 +88,8 @@ int time_curr_I;
 int time_prev_I;
 
 
-int motor_address,accel_address,gyro_address;
+int motor_address,acceleration_address,gyroscope_address;
+int motor0, motor1, motor2, motor3;
 
 
 
@@ -103,7 +104,7 @@ Joystick *shared_memory;
 
 std::array <int, 4> motor_commands;
 
-std::array<int, 4> pitch_signs = {1, -1, 1, -1};
+std::array<int, 4> pitch_signs = {-1, 1, -1, 1};
 
 
 
@@ -126,14 +127,18 @@ void set_motors_P(Joystick data);
 void set_motors_D(Joystick data);
 void set_motors_I(Joystick data);
 void set_motors_PID(Joystick data);
+void set_motors(std::array<int, 4> motors);
+void motor_enable();
 
 int main(int argc, char *argv[])
 {
 
     setup_imu();
     calibrate_imu();
-    setup_joystick();
     motor_address=wiringPiI2CSetup(0x56);
+    motor_enable();
+    setup_joystick();
+    
     last_sequence = shared_memory->sequence_num;
     signal(SIGINT, &trap);
 
@@ -149,6 +154,7 @@ int main(int argc, char *argv[])
         joystick_data = *shared_memory;
         safety_check(joystick_data);
         set_motors_PID(joystick_data);
+        set_motors(motor_commands);
         print_motors();
     }
     return 0;
@@ -336,8 +342,8 @@ void update_filter()
     float A = 0.02;
 
     // gyro delta (deg)
-    float roll_gyro_delta = accels_and_gyros[3] * imu_diff;
-    float pitch_gyro_delta = accels_and_gyros[4] * imu_diff;
+    float roll_gyro_delta = accels_and_gyros[4] * imu_diff;
+    float pitch_gyro_delta = accels_and_gyros[5] * imu_diff;
 
     // complementary filter
     f_roll_angle = A * roll_angle + (1 - A) * (roll_gyro_delta + f_roll_angle);
@@ -561,14 +567,33 @@ void set_motors_PID(Joystick data){
         integ_pitch_err = -I_SATURATE;
     }
 
-    int pitch_correction = integ_pitch_err + PITCH_P_GAIN * pitch_error + PITCH_D_GAIN * accels_and_gyros[4];
+    int pitch_correction = integ_pitch_err + PITCH_P_GAIN * pitch_error - PITCH_D_GAIN * accels_and_gyros[5];
     //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
 
 
+    // for (int i = 0; i < motor_commands.size(); i++){
+    //     motor_commands[i] += pitch_correction * pitch_signs[i];
+    // }
     for (int i = 0; i < motor_commands.size(); i++){
-        motor_commands[i] += pitch_correction * pitch_signs[i];
+        if (run_program == 0) {
+            motor_commands[i] = 0;
+        }
+        else
+        {
+            motor_commands[i] += pitch_correction * pitch_signs[i];
+        if(motor_commands[i] > THRUST_MAX)
+            {
+            motor_commands[i] = THRUST_MAX;
+            }
+        else if (motor_commands[i] < 0)
+            {
+            motor_commands[i] = 0;
     }
 
+
+
+    }   
+    }
     time_prev_I = time_curr_I;
 }
 
@@ -576,7 +601,7 @@ void set_motors_PID(Joystick data){
 
 void print_motors(){
     //printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], f_pitch_angle, accels_and_gyros[4]);
-    printf("%d, %d, %d, %d, %10.5f \n\r" , motor_commands[0], motor_commands[1], init_thrust, pitch_desired*10, f_pitch_angle*10);
+    printf("%d, %d, %d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3], f_pitch_angle, accels_and_gyros[5]); //pitch_angle);
 }
 
 
@@ -711,8 +736,14 @@ for(int i=0;i<500;i++)
         usleep(cal_delay);
     }
 }
-void set_motors(int motor0, int motor1, int motor2, int motor3)
+void set_motors(std::array<int, 4> motors)
 {
+    
+    motor0=motors[0];   
+    motor1=motors[1];
+    motor2=motors[2];
+    motor3=motors[3];
+
     if(motor0<0)
         motor0=0;
 
@@ -743,19 +774,19 @@ void set_motors(int motor0, int motor1, int motor2, int motor3)
     uint16_t commanded_speed_1=0;
     uint16_t commanded_speed=0;
     uint8_t data[2];
-    
+
     // wiringPiI2CWriteReg8(motor_address, 0x00,data[0] );
     //wiringPiI2CWrite (motor_address,data[0]) ;
     int com_delay=500;
     motor_id=0;
     commanded_speed=motor0;
-    data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&
-    0x0f);
+    data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&0x0f);
     data[1]=commanded_speed&0x7f;
     wiringPiI2CWrite(motor_address,data[0]);
     usleep(com_delay);
     wiringPiI2CWrite(motor_address,data[1]);
     usleep(com_delay);
+    
     motor_id=1;
     commanded_speed=motor1;
     data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&
@@ -765,6 +796,7 @@ void set_motors(int motor0, int motor1, int motor2, int motor3)
     usleep(com_delay);
     wiringPiI2CWrite(motor_address,data[1]);
     usleep(com_delay);
+    
     motor_id=2;
     commanded_speed=motor2;
     data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&
@@ -774,6 +806,7 @@ void set_motors(int motor0, int motor1, int motor2, int motor3)
     usleep(com_delay);
     wiringPiI2CWrite(motor_address,data[1]);
     usleep(com_delay);
+    
     motor_id=3;
     commanded_speed=motor3;
     data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&
