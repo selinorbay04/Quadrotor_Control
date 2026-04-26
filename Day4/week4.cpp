@@ -23,9 +23,9 @@
 #define THURST_AMPLITUDE 100
 
 #define PITCH_AMPLITUDE 10
-#define PITCH_P_GAIN 0
+#define PITCH_P_GAIN 5
 
-#define PITCH_D_GAIN 5
+#define PITCH_D_GAIN 0
 #define PITCH_I_GAIN 0
 #define I_SATURATE 0
 
