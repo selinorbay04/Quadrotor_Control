@@ -18,16 +18,25 @@
 #define JOYSTICK_TIMEOUT_S 1.0
 
 #define THURST_MIN 0 
-#define THRUST_MAX 2000
-#define THRUST_NEUTRAL 500
+#define THRUST_MAX 1200
+#define THRUST_NEUTRAL 800
 #define THURST_AMPLITUDE 100
 
-#define PITCH_AMPLITUDE 10
-#define PITCH_P_GAIN 15
+#define PITCH_AMPLITUDE 0 //10
+#define PITCH_P_GAIN 0 //15
 
-#define PITCH_D_GAIN 3
-#define PITCH_I_GAIN 0
-#define I_SATURATE 0
+#define PITCH_D_GAIN 0 //3
+#define PITCH_I_GAIN 0 //4
+#define I_SATURATE_PITCH 0 //100
+
+#define ROLL_AMPLITUDE 0 //10
+#define ROLL_I_GAIN 0 //4
+#define ROLL_P_GAIN 0 //15 
+#define ROLL_D_GAIN 0 //3
+#define I_SATURATE_ROLL 0 //100
+
+#define YAW_AMPLITUDE 45
+#define YAW_P_GAIN 5
 
 // Structs
 struct Joystick
@@ -78,9 +87,16 @@ int run_program = 1;
 
 int init_thrust = 0;
 int pitch_desired = 0;
-int pitch_error = 0;
+float pitch_error = 0.0;
 
-float integ_pitch_err = 0;
+float integ_pitch_err = 0.0;
+
+float integ_roll_err = 0.0;
+float roll_error = 0.0;
+int roll_desired = 0;
+
+float yaw_error = 0.0;
+int yaw_desired = 0;
 
 double joy_dt = 0.0;
 
@@ -91,6 +107,7 @@ int time_prev_I;
 int motor_address,acceleration_address,gyroscope_address;
 int motor0, motor1, motor2, motor3;
 
+bool motors_paused = false;
 
 
 // int pitch_prev_error = 0;
@@ -105,8 +122,8 @@ Joystick *shared_memory;
 std::array <int, 4> motor_commands;
 
 std::array<int, 4> pitch_signs = {-1, 1, -1, 1};
-
-
+std::array<int, 4> roll_signs = {-1, -1, 1, 1};
+std::array<int, 4> yaw_signs = {-1, 1, 1, -1};
 
 //Function prototypes
 int setup_imu();
@@ -130,6 +147,8 @@ void set_motors_PID(Joystick data);
 void set_motors(std::array<int, 4> motors);
 void motor_enable();
 
+bool is_motors_paused(Joystick data);
+
 int main(int argc, char *argv[])
 {
 
@@ -149,13 +168,23 @@ int main(int argc, char *argv[])
 
     while (run_program == 1)
     {
-        read_imu();
-        update_filter();
-        joystick_data = *shared_memory;
-        safety_check(joystick_data);
-        set_motors_PID(joystick_data);
-        set_motors(motor_commands);
-        print_motors();
+        //while(!is_motors_paused(joystick_data)){
+            read_imu();
+            update_filter();
+            joystick_data = *shared_memory;
+            safety_check(joystick_data);
+
+            if(is_motors_paused(joystick_data)){
+                printf("paused ... \n");
+            }
+            if(!is_motors_paused(joystick_data)){ 
+                
+                set_motors_PID(joystick_data);
+                
+            }
+            set_motors(motor_commands);
+            print_motors();
+        //}
     }
     return 0;
 }
@@ -185,7 +214,7 @@ int setup_imu()
         sleep(1);
         wiringPiI2CWriteReg8(accel_address, 0x7d, 0x04); // power on accel
         wiringPiI2CWriteReg8(accel_address, 0x41, 0x00); // accel range to +_3g
-        wiringPiI2CWriteReg8(accel_address, 0x40, 0xA9); // high speed filtered accel
+        wiringPiI2CWriteReg8(accel_address, 0x40, 0x89); // high speed filtered accel
 
         wiringPiI2CWriteReg8(gyro_address, 0x11, 0x00); // power on gyro
         wiringPiI2CWriteReg8(gyro_address, 0x0F, 0x01); // set gyro to +-1000dps
@@ -446,94 +475,7 @@ void safety_check(Joystick data)
     }
 }
 
-// Helpers for printing data for debugging
-void print_imu_data()
-{
-    printf("Gx:%10.5f | Gy:%10.5f | Gz:%10.5f | Roll:%10.5f | Pitch:%10.5f\n\r", accels_and_gyros[3], accels_and_gyros[4], accels_and_gyros[5], roll_angle, pitch_angle);
-}
 
-void print_roll_data()
-{
-    printf("%10.5f, %10.5f, %10.5f\n\r", f_roll_angle, roll_angle, i_roll);
-}
-
-void print_pitch_data()
-{
-    printf("%10.5f, %10.5f, %10.5f\n\r", f_pitch_angle, pitch_angle, i_pitch);
-}
-
-void set_motors_P(Joystick data){
-    //
-    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
-    motor_commands.fill(init_thrust);
-
-    pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
-    pitch_error =  pitch_desired - f_pitch_angle;
-
-    int pitch_correction = PITCH_P_GAIN * pitch_error;
-    //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
-
-
-    for (int i = 0; i < motor_commands.size(); i++){
-        motor_commands[i] += pitch_correction * pitch_signs[i];
-    }
-}
-
-void set_motors_D(Joystick data){
-
-    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
-    motor_commands.fill(init_thrust);
-
-    int pitch_correction = PITCH_D_GAIN * accels_and_gyros[4];
-
-
-    for (int i = 0; i < motor_commands.size(); i++){
-        motor_commands[i] += pitch_correction * pitch_signs[i];
-    }
-}
-
-void set_motors_I(Joystick data){
-
-    timespec_get(&te, TIME_UTC);
-    time_curr_I = te.tv_nsec;
-    // compute time since last execution
-    float imu_diff = time_curr_I - time_prev_I;
-    // check for rollover
-    if (imu_diff <= 0)
-    {
-        imu_diff += 1000000000;
-    }
-    // convert to seconds
-    imu_diff = imu_diff / 1000000000;
-    
-
-
-    //
-    init_thrust = THRUST_NEUTRAL + float(THURST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
-    motor_commands.fill(init_thrust);
-
-    pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
-    pitch_error =  pitch_desired - f_pitch_angle;
-
-    integ_pitch_err += imu_diff *float(pitch_error) * (float)PITCH_I_GAIN;
-
-    if(integ_pitch_err > I_SATURATE){
-        integ_pitch_err = I_SATURATE;
-    }
-    else if(integ_pitch_err < -I_SATURATE){
-        integ_pitch_err = -I_SATURATE;
-    }
-
-    int pitch_correction =  integ_pitch_err;
-    //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
-
-
-    for (int i = 0; i < motor_commands.size(); i++){
-        motor_commands[i] += pitch_correction * pitch_signs[i];
-    }
-
-    time_prev_I = time_curr_I;
-}
 
 void set_motors_PID(Joystick data){
 
@@ -556,52 +498,85 @@ void set_motors_PID(Joystick data){
     motor_commands.fill(init_thrust);
 
     pitch_desired = PITCH_AMPLITUDE * (data.pitch - 128) / 127;
-    pitch_error =  pitch_desired - f_pitch_angle;
+    pitch_error =  (float)pitch_desired - f_pitch_angle;
+
+    roll_desired = ROLL_AMPLITUDE * (data.roll - 128) / 127;
+    roll_error = (float)roll_desired - f_roll_angle;
+
+    yaw_desired = -(YAW_AMPLITUDE * (data.yaw - 128) / 127);
+    yaw_error = (float)yaw_desired - accels_and_gyros[3];
 
     integ_pitch_err += imu_diff *float(pitch_error)*(float)PITCH_I_GAIN;
+    integ_roll_err += imu_diff *float(roll_error)*(float)ROLL_I_GAIN;
 
-    if(integ_pitch_err > I_SATURATE){
-        integ_pitch_err = I_SATURATE;
+    if(integ_pitch_err > I_SATURATE_PITCH){
+        integ_pitch_err = I_SATURATE_PITCH;
     }
-    else if(integ_pitch_err < -I_SATURATE){
-        integ_pitch_err = -I_SATURATE;
+    else if(integ_pitch_err < -I_SATURATE_PITCH){
+        integ_pitch_err = -I_SATURATE_PITCH;
+    }
+
+    if(integ_pitch_err > I_SATURATE_ROLL){
+        integ_pitch_err = I_SATURATE_ROLL;
+    }
+    else if(integ_pitch_err < -I_SATURATE_ROLL){
+        integ_pitch_err = -I_SATURATE_ROLL;
     }
 
     int pitch_correction = integ_pitch_err + PITCH_P_GAIN * pitch_error - PITCH_D_GAIN * accels_and_gyros[5];
+    int roll_correction = integ_roll_err + ROLL_P_GAIN * roll_error - ROLL_D_GAIN * accels_and_gyros[4];
     //pitch_corrections = {PITCH_P_GAIN * pitch_error, PITCH_P_GAIN * pitch_error, -(PITCH_P_GAIN * pitch_error), -(PITCH_P_GAIN * pitch_error)};
 
+    int yaw_correction = yaw_error * YAW_P_GAIN;
+    
 
-    // for (int i = 0; i < motor_commands.size(); i++){
-    //     motor_commands[i] += pitch_correction * pitch_signs[i];
+
+    motor_commands[0] = motor_commands[0] + pitch_correction * pitch_signs[0] + roll_correction * roll_signs[0] + yaw_correction * yaw_signs[0];
+    motor_commands[1] = motor_commands[1] + pitch_correction * pitch_signs[1] + roll_correction * roll_signs[1] + yaw_correction * yaw_signs[1];
+    motor_commands[2] = motor_commands[2] + pitch_correction * pitch_signs[2] + roll_correction * roll_signs[2] + yaw_correction * yaw_signs[2];
+    motor_commands[3] = motor_commands[3] + pitch_correction * pitch_signs[3] + roll_correction * roll_signs[3] + yaw_correction * yaw_signs[3];
+
+
+
+    // if (run_program == 0) {
+    //     motor_commands.fill(0);
     // }
-    for (int i = 0; i < motor_commands.size(); i++){
-        if (run_program == 0) {
-            motor_commands[i] = 0;
-        }
-        else
-        {
-            motor_commands[i] += pitch_correction * pitch_signs[i];
-        if(motor_commands[i] > THRUST_MAX)
-            {
-            motor_commands[i] = THRUST_MAX;
-            }
-        else if (motor_commands[i] < 0)
-            {
-            motor_commands[i] = 0;
-    }
 
+    // if(motor_commands[0] > THRUST_MAX || motor_commands[1] > THRUST_MAX || motor_commands[2] > THRUST_MAX || motor_commands[3] > THRUST_MAX){
+    //     motor_commands.fill(THRUST_MAX);
+    // }
+    // else if (motor_commands[0] < 0 || motor_commands[1] < 0 || motor_commands[2] < 0 || motor_commands[3] < 0){
+    //     motor_commands.fill(0);
+    // }
 
+    
 
-    }   
-    }
     time_prev_I = time_curr_I;
+    
+
+    //printf("Motors paused...");
 }
 
+
+bool is_motors_paused(Joystick data){
+    //A = key0
+    //Y = key3
+    if(data.key0 == 1){
+        motor_commands.fill(2);
+        motors_paused = true;
+    }
+
+    if(data.key3 == 1){
+        
+        motors_paused = false;
+    }
+    return motors_paused;
+}
 
 
 void print_motors(){
     //printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], f_pitch_angle, accels_and_gyros[4]);
-    printf("%d, %d, %d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3], f_pitch_angle, pitch_angle); //pitch_angle);
+    printf("%d, %d, %d, %d, %d, %10.5f \n\r" , motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3], yaw_desired, accels_and_gyros[3]); //pitch_angle);
 }
 
 
@@ -811,7 +786,7 @@ void set_motors(std::array<int, 4> motors)
     commanded_speed=motor3;
     data[0]=0x80+(motor_id<<5)+(special_command<<4)+((commanded_speed>>7)&
     0x0f);
-    data[1]=commanded_speed&0x7f;
+    data[1]=commanded_speed&0x7f; 
     wiringPiI2CWrite(motor_address,data[0]);
     usleep(com_delay);
     wiringPiI2CWrite(motor_address,data[1]);
