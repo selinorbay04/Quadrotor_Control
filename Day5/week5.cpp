@@ -18,25 +18,24 @@
 #define JOYSTICK_TIMEOUT_S 1.0
 
 #define THURST_MIN 0 
-#define THRUST_MAX 1200
-#define THRUST_NEUTRAL 800
-#define THURST_AMPLITUDE 100
+#define THRUST_MAX 2000
+#define THRUST_NEUTRAL 1300
+#define THURST_AMPLITUDE 300
 
-#define PITCH_AMPLITUDE 0 //10
-#define PITCH_P_GAIN 0 //15
+#define PITCH_AMPLITUDE 6 //10
+#define PITCH_P_GAIN 20 //15
+#define PITCH_D_GAIN 3 //3
+#define PITCH_I_GAIN 4 //4
+#define I_SATURATE_PITCH 100 //100
 
-#define PITCH_D_GAIN 0 //3
-#define PITCH_I_GAIN 0 //4
-#define I_SATURATE_PITCH 0 //100
+#define ROLL_AMPLITUDE 6 //10
+#define ROLL_I_GAIN 4 //4
+#define ROLL_P_GAIN 25 //15 
+#define ROLL_D_GAIN 3 //3
+#define I_SATURATE_ROLL 100 //100
 
-#define ROLL_AMPLITUDE 0 //10
-#define ROLL_I_GAIN 0 //4
-#define ROLL_P_GAIN 0 //15 
-#define ROLL_D_GAIN 0 //3
-#define I_SATURATE_ROLL 0 //100
-
-#define YAW_AMPLITUDE 45
-#define YAW_P_GAIN 5
+#define YAW_AMPLITUDE 80
+#define YAW_P_GAIN 9
 
 // Structs
 struct Joystick
@@ -183,7 +182,7 @@ int main(int argc, char *argv[])
                 
             }
             set_motors(motor_commands);
-            print_motors();
+            //print_motors();
         //}
     }
     return 0;
