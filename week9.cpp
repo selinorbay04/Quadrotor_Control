@@ -47,10 +47,15 @@
 #define YAW_P_GAIN_AUTON 4
 
 // camera autnomous control
-#define P_CAM 10
+#define P_CAM 60
 #define D_CAM 2
+#define P_CAM_THRUST 10
+#define D_CAM_THRUST 2
+#define I_CAM_THRUST 0.1
+#define I_CAM_SAT 100
 #define AUTO_X 0
 #define AUTO_Y 0
+#define AUTO_Z 0.3
 #define CAM_FILTER_ALPHA 0.4
 
 // ====================================================================
@@ -155,14 +160,22 @@ bool auton = false;
 bool last_state_x = false;
 
 // camera autoomy
-float cam_x_prev = 0;
-float cam_y_prev = 0;
+float cam_x_prev = 0.0;
+float cam_y_prev = 0.0;
+float cam_z_prev = 0.0;
 
-float cam_x_estimated = 0;
-float cam_y_estimated = 0;
+float cam_x_estimated = 0.0;
+float cam_y_estimated = 0.0;
+float cam_z_estimated = 0.0;
 
-float cam_time_prev = 0;
+float cam_time_prev = 0.0;
 int last_cam_sequence = 0;
+
+float auto_thrust_error = 0.0;
+float auto_thrust_P = 0.0;
+float auto_thrust_D = 0.0;
+float auto_i_thrust_err_ = 0.0;
+
 
 // ====================================================================
 // Function defining
@@ -240,6 +253,7 @@ int main(int argc, char *argv[])
 
 
         set_motors(motor_commands);
+        //double_check_print();
         print_motors();
     }
     return 0;
@@ -273,9 +287,10 @@ void double_check_print()
 void print_motors(){
     //printf("%d, %d, %10.5f, %10.5f \n\r" , motor_commands[0], motor_commands[1], f_pitch_angle, accels_and_gyros[4]);
     //printf("%10.5f, %d, %d, %d, %d, %d \n\r" , f_pitch_angle, pitch_desired, motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3]); //pitch_angle);
-    if (auton){
-        printf("%10.5f \n\r", (-joystick_data.camera_yaw));
-    }
+    //if (auton){
+        //printf("%10.5f \n\r", (-joystick_data.camera_yaw));
+    printf("pitch: %.3f, roll: %.3f, thrust: %.3f \n\r", pitch_desired, roll_desired, thrust_desired);
+    //}
 }
 
 // ====================================================================
@@ -493,14 +508,39 @@ void camera_control()
 
     //exponential filter
     cam_y_estimated = cam_y_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.y * CAM_FILTER_ALPHA;
+    cam_x_estimated = cam_x_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.x * CAM_FILTER_ALPHA;
+    cam_z_estimated = cam_z_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.z * CAM_FILTER_ALPHA;
 
     // camera PD controller, update  globals
-    pitch_desired = P_CAM * (cam_y_estimated - AUTO_Y) - D_CAM * (cam_y_estimated - cam_y_prev)/cam_dt; //data.y;
+    pitch_desired = 0.5*(-(P_CAM * (cam_y_estimated - AUTO_Y) - D_CAM * (cam_y_estimated - cam_y_prev)/cam_dt)) 
+                    + 0.5*((float)(PITCH_AMPLITUDE * (joystick_data.pitch - 128)) / 127.0);
+
+
+    roll_desired = 0.5*(-(P_CAM * (cam_x_estimated - AUTO_X) - D_CAM * (cam_x_estimated - cam_x_prev)/cam_dt))
+                    + 0.5*((float)(ROLL_AMPLITUDE * (joystick_data.roll - 128)) / 127.0);
+    
     yaw_desired = 0;
-    thrust_desired = 0;
+
+    auto_thrust_error = joystick_data.z - AUTO_Z;
+    auto_thrust_P = auto_thrust_error*P_CAM_THRUST;
+    auto_thrust_D = D_CAM_THRUST * (cam_z_estimated - cam_z_prev) / cam_dt;
+
+    auto_i_thrust_err_ += cam_dt * auto_thrust_error * I_CAM_THRUST;
+
+    if(auto_i_thrust_err_ > I_CAM_SAT){
+        auto_i_thrust_err_ = I_CAM_SAT;
+    }
+    else if(auto_i_thrust_err_ < -I_CAM_SAT){
+        auto_i_thrust_err_ = -I_CAM_SAT;
+    }
+    
+
+    thrust_desired = 0.5*(auto_i_thrust_err_ + auto_thrust_P + auto_thrust_D) + 0.5 * ((float)(THRUST_AMPLITUDE * -(joystick_data.thrust - 128)) / 127.0);
+
 
     cam_y_prev = cam_y_estimated;
     cam_x_prev = cam_x_estimated;
+    cam_z_prev = cam_z_estimated;
     cam_time_prev = cam_time_curr;
     last_cam_sequence = joystick_data.sequence_num;
 }
@@ -534,6 +574,8 @@ void set_motors_PID(data data, bool autonomous){
         roll_desired = (float)(ROLL_AMPLITUDE * (data.roll - 128)) / 127.0; 
         yaw_desired = -(float)(YAW_AMPLITUDE * (data.yaw - 128)) / 127.0;
 
+        thrust_desired = (float)(THRUST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+
         yaw_actual = accels_and_gyros[3];
 
         p_gain_yaw = YAW_P_GAIN_CTRL; 
@@ -542,7 +584,7 @@ void set_motors_PID(data data, bool autonomous){
     pitch_actual = f_pitch_angle;
     roll_actual = f_roll_angle;
 
-    init_thrust = THRUST_NEUTRAL + float(THRUST_AMPLITUDE * -(data.thrust - 128)) / 127.0;
+    init_thrust = THRUST_NEUTRAL + thrust_desired;
     motor_commands.fill(init_thrust);
 
     pitch_error = pitch_desired - pitch_actual;
@@ -560,10 +602,10 @@ void set_motors_PID(data data, bool autonomous){
     }
 
     if(integ_roll_err > I_SATURATE_ROLL){
-        integ_pitch_err = I_SATURATE_ROLL;
+        integ_roll_err = I_SATURATE_ROLL;
     }
     else if(integ_roll_err < -I_SATURATE_ROLL){
-        integ_pitch_err = -I_SATURATE_ROLL;
+        integ_roll_err = -I_SATURATE_ROLL;
     }
 
     float pitch_correction = integ_pitch_err + PITCH_P_GAIN * pitch_error - PITCH_D_GAIN * accels_and_gyros[5];
