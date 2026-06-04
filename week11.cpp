@@ -23,8 +23,8 @@
 // thrust
 #define THRUST_MIN 0 
 #define THRUST_MAX 2000
-#define THRUST_NEUTRAL 1500
-#define THRUST_AMPLITUDE 200
+#define THRUST_NEUTRAL 1300
+#define THRUST_AMPLITUDE 300
 
 // pitch PID
 #define PITCH_AMPLITUDE 6 //10
@@ -44,18 +44,19 @@
 #define YAW_AMPLITUDE 70
 #define YAW_P_GAIN_CTRL 5
 
-#define YAW_P_GAIN_AUTON 4
+#define YAW_P_GAIN_AUTON 2
+
 
 // camera autnomous control
-#define P_CAM 0 //70
-#define D_CAM 0 //15
-#define P_CAM_THRUST 50
+#define P_CAM 10  //
+#define D_CAM 30 //20 - 40
+#define P_CAM_THRUST 0
 #define D_CAM_THRUST 0.0
 #define I_CAM_THRUST 0.0
 #define I_CAM_SAT 100
 #define AUTO_X 0
 #define AUTO_Y 0
-#define AUTO_Z 1.5
+#define AUTO_Z 0
 #define CAM_FILTER_ALPHA 0.4
 
 // ====================================================================
@@ -285,11 +286,11 @@ void double_check_print()
 }
 
 void print_motors(){
-    printf("%d, %d, %d, %d \n\r" , motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3]);
+    //printf("%d, %d, %d, %d \n\r" , motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3]);
     //printf("%10.5f, %d, %d, %d, %d, %d \n\r" , f_pitch_angle, pitch_desired, motor_commands[0], motor_commands[1], motor_commands[2], motor_commands[3]); //pitch_angle);
     //if (auton){
         //printf("%10.5f \n\r", (-joystick_data.camera_yaw));
-    //printf("pitch: %.3f, roll: %.3f, thrust: %.3f \n\r", pitch_desired, roll_desired, thrust_desired);
+    printf("pitch: %.3f, roll: %.3f, thrust: %.3f \n\r", pitch_desired, roll_desired, thrust_desired);
     //}
 }
 
@@ -512,11 +513,11 @@ void camera_control()
     cam_z_estimated = cam_z_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.z * CAM_FILTER_ALPHA;
 
     // camera PD controller, update  globals
-    pitch_desired = 0.5*(-(P_CAM * (cam_y_estimated - AUTO_Y) - D_CAM * (cam_y_estimated - cam_y_prev)/cam_dt)) 
+    pitch_desired = 0.5*(-(P_CAM * (cam_y_estimated - AUTO_Y) + D_CAM * (cam_y_estimated - cam_y_prev)/cam_dt))
                     + 0.5*((float)(PITCH_AMPLITUDE * (joystick_data.pitch - 128)) / 127.0);
 
 
-    roll_desired = 0.5*(-(P_CAM * (cam_x_estimated - AUTO_X) - D_CAM * (cam_x_estimated - cam_x_prev)/cam_dt))
+    roll_desired = 0.5*(-(P_CAM * (cam_x_estimated - AUTO_X) + D_CAM * (cam_x_estimated - cam_x_prev)/cam_dt))
                     + 0.5*((float)(ROLL_AMPLITUDE * (joystick_data.roll - 128)) / 127.0);
     
     yaw_desired = 0;
