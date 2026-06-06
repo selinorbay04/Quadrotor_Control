@@ -9,6 +9,8 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <array>
+#include <string>
+
 
 // ====================================================================
 // DEFINES
@@ -44,12 +46,12 @@
 #define YAW_AMPLITUDE 70
 #define YAW_P_GAIN_CTRL 5
 
-#define YAW_P_GAIN_AUTON 2
+#define YAW_P_GAIN_AUTON 1
 
 
 // camera autnomous control
-#define P_CAM 10  //
-#define D_CAM 30 //20 - 40
+#define P_CAM 40  //
+#define D_CAM 10
 #define P_CAM_THRUST 0
 #define D_CAM_THRUST 0.0
 #define I_CAM_THRUST 0.0
@@ -177,6 +179,15 @@ float auto_thrust_P = 0.0;
 float auto_thrust_D = 0.0;
 float auto_i_thrust_err_ = 0.0;
 
+// logging for tuning 
+double prog_t0   = 0.0;   // program start time, for an elapsed-time x-axis
+float  cam_dt_log = 0.0;  // last camera dt
+float  y_cam_P = 0.0;     // camera P term -> desired pitch (Y axis)
+float  y_cam_D = 0.0;     // camera D term -> desired pitch
+float  x_cam_P = 0.0;     // camera P term -> desired roll  (X axis)
+float  x_cam_D = 0.0;     // camera D term -> desired roll
+float  y_vel_filt = 0.0;     // filtered camera Y velocity for logging and tuning
+float x_vel_filt = 0.0;
 
 // ====================================================================
 // Function defining
@@ -210,6 +221,7 @@ void print_motors();
 void print_imu_data();
 void print_roll_data();
 void print_pitch_data();
+void print_for_logging(std::string label);
 
 // milestoning
 /*
@@ -221,6 +233,9 @@ void set_motors_I(data data);
 // ====================================================================
 // Function defining
 // ====================================================================
+
+//using namespace std;
+
 int main(int argc, char *argv[])
 {
     setup_imu();
@@ -235,6 +250,10 @@ int main(int argc, char *argv[])
 
     timespec_get(&te, TIME_UTC);
     joy_time_prev = te.tv_nsec;
+    prog_t0 = (double)te.tv_sec + (double)te.tv_nsec * 1e-9;
+
+
+    printf("time_s, cam_y_raw, cam_y_est, y_P, y_D, pitch_des, pitch_act, cam_dt, integ_pitch_err\n");
 
     joystick_data=*shared_memory;
 
@@ -255,7 +274,8 @@ int main(int argc, char *argv[])
 
         set_motors(motor_commands);
         //double_check_print();
-        print_motors();
+        //print_motors();
+        print_for_logging("pitch");
     }
     return 0;
 }
@@ -292,6 +312,38 @@ void print_motors(){
         //printf("%10.5f \n\r", (-joystick_data.camera_yaw));
     printf("pitch: %.3f, roll: %.3f, thrust: %.3f \n\r", pitch_desired, roll_desired, thrust_desired);
     //}
+}
+
+void print_for_logging(std::string label){
+    timespec_get(&te, TIME_UTC);
+    double now = (double)te.tv_sec + (double)te.tv_nsec * 1e-9;
+    float t = (float)(now - prog_t0);
+
+    if(label == "pitch"){
+        printf("%.4f, %.4f, %.4f, %.3f, %.3f, %.3f, %.3f, %.5f, %.5f\n",
+           t,                 // time_s
+           joystick_data.y,   // cam_y_raw   
+           cam_y_estimated,   // cam_y_est   
+           y_cam_P,           // y_P term
+           y_cam_D,           // y_D term
+           pitch_desired,     // pitch_des   
+           f_pitch_angle,     // pitch_act   
+           cam_dt_log,
+           integ_pitch_err    // integrated pitch error
+           );
+    }
+    else if(label == "roll"){
+        printf("%.4f, %.4f, %.4f, %.3f, %.3f, %.3f, %.3f, %.5f\n",
+           t,                 // time_s
+           joystick_data.x,   // cam_x_raw   
+           cam_x_estimated,   // cam_x_est   
+           x_cam_P,           // x_P term
+           x_cam_D,           // x_D term
+           roll_desired,      // roll_des    
+           f_roll_angle,      // roll_act   
+           cam_dt_log);       // cam_dt
+    }
+
 }
 
 // ====================================================================
@@ -512,15 +564,25 @@ void camera_control()
     cam_x_estimated = cam_x_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.x * CAM_FILTER_ALPHA;
     cam_z_estimated = cam_z_estimated * (1.0 - CAM_FILTER_ALPHA) + joystick_data.z * CAM_FILTER_ALPHA;
 
-    // camera PD controller, update  globals
-    pitch_desired = 0.5*(-(P_CAM * (cam_y_estimated - AUTO_Y) + D_CAM * (cam_y_estimated - cam_y_prev)/cam_dt))
-                    + 0.5*((float)(PITCH_AMPLITUDE * (joystick_data.pitch - 128)) / 127.0);
+    //camera control for pitch (Y axis) - seperated for logging and tuning
+    float y_velocity = (cam_y_estimated - cam_y_prev) / cam_dt;
+    y_cam_P = -P_CAM * (cam_y_estimated - AUTO_Y);
+    y_cam_D = -D_CAM * y_velocity;
+    //y_vel_filt = y_vel_filt*0.8 + y_velocity*0.2; 
+    pitch_desired = 0.5*(y_cam_P + y_cam_D) + 0.5*((float)(PITCH_AMPLITUDE * (joystick_data.pitch - 128)) / 127.0);
+
+    //camera control for roll (X axis) - seperated for logging and tuning
+    float x_velocity = (cam_x_estimated - cam_x_prev) / cam_dt;
+    x_cam_P = -P_CAM * (cam_x_estimated - AUTO_X);
+    x_cam_D = -D_CAM * x_velocity;
+    //x_vel_filt = x_vel_filt * 0.8f + x_velocity * 0.2f;
+    roll_desired = 0.5*(x_cam_P + x_cam_D) + 0.5*((float)(ROLL_AMPLITUDE * (joystick_data.roll - 128)) / 127.0);
 
 
-    roll_desired = 0.5*(-(P_CAM * (cam_x_estimated - AUTO_X) + D_CAM * (cam_x_estimated - cam_x_prev)/cam_dt))
-                    + 0.5*((float)(ROLL_AMPLITUDE * (joystick_data.roll - 128)) / 127.0);
-    
+
     yaw_desired = 0;
+
+    
 
     auto_thrust_error = AUTO_Z - joystick_data.z; //camera is above drone
     auto_thrust_P = auto_thrust_error*P_CAM_THRUST;
@@ -543,6 +605,7 @@ void camera_control()
     cam_x_prev = cam_x_estimated;
     cam_z_prev = cam_z_estimated;
     cam_time_prev = cam_time_curr;
+    cam_dt_log = cam_dt;
     last_cam_sequence = joystick_data.sequence_num;
 }
 
@@ -566,8 +629,11 @@ void set_motors_PID(data data, bool autonomous){
         // finds desired values from camera
         camera_control();
 
+        integ_pitch_err = 0.0;
+        integ_roll_err = 0.0;
         yaw_actual = -data.camera_yaw;
         p_gain_yaw = YAW_P_GAIN_AUTON; 
+
     }
 
     else{
@@ -707,6 +773,8 @@ bool is_motors_paused(data data){
     if(data.key0 == 1){
         motor_commands.fill(2);
         motors_paused = true;
+        integ_pitch_err = 0.0;
+        integ_roll_err = 0.0;
         printf("paused ... \n");
     }
 
