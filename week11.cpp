@@ -567,14 +567,14 @@ void camera_control()
     //camera control for pitch (Y axis) - seperated for logging and tuning
     float y_velocity = (cam_y_estimated - cam_y_prev) / cam_dt;
     y_cam_P = -P_CAM * (cam_y_estimated - AUTO_Y);
-    y_cam_D = -D_CAM * y_velocity;
+    y_cam_D = D_CAM * y_velocity;
     //y_vel_filt = y_vel_filt*0.8 + y_velocity*0.2; 
     pitch_desired = 0.5*(y_cam_P + y_cam_D) + 0.5*((float)(PITCH_AMPLITUDE * (joystick_data.pitch - 128)) / 127.0);
 
     //camera control for roll (X axis) - seperated for logging and tuning
     float x_velocity = (cam_x_estimated - cam_x_prev) / cam_dt;
     x_cam_P = -P_CAM * (cam_x_estimated - AUTO_X);
-    x_cam_D = -D_CAM * x_velocity;
+    x_cam_D = D_CAM * x_velocity;
     //x_vel_filt = x_vel_filt * 0.8f + x_velocity * 0.2f;
     roll_desired = 0.5*(x_cam_P + x_cam_D) + 0.5*((float)(ROLL_AMPLITUDE * (joystick_data.roll - 128)) / 127.0);
 
